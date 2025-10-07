@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>日経平均 25日移動平均（前営業日基準）</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    .glass { background: linear-gradient(135deg, rgba(255,255,255,0.7), rgba(255,255,255,0.5)); backdrop-filter: blur(6px); }
+    .num { font-variant-numeric: tabular-nums; }
+    #chart { height: 360px; }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen flex items-center justify-center p-6">
+  <div class="w-full max-w-4xl">
+    <header class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-bold text-slate-700">日経平均 — 25日移動平均（前営業日基準）</h1>
+      <div class="text-sm text-slate-500">前営業日を最新データとして25営業日遡る計算</div>
+    </header>
+
+    <main class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <section class="glass rounded-2xl p-6 shadow">
+        <div id="status" class="text-sm text-slate-500 mb-4">データ取得中…</div>
+
+        <div class="space-y-3">
+          <div class="flex items-baseline justify-between">
+            <div>基準日（前営業日）</div>
+            <div id="baseDate" class="text-sm text-slate-500">—</div>
+          </div>
+
+          <div class="flex items-baseline justify-between">
+            <div>前日（基準日）終値</div>
+            <div id="latestClose" class="text-2xl font-semibold text-blue-600 num">—</div>
+          </div>
+
+          <div class="flex items-baseline justify-between">
+            <div>25日移動平均（基準日を含む直近25営業日）</div>
+            <div id="ma25" class="text-2xl font-semibold text-emerald-600 num">—</div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-3 mt-4">
+            <div class="p-3 bg-white rounded-lg shadow-sm text-center">
+              <div class="text-xs text-slate-400">+5%</div>
+              <div id="plus5" class="font-bold num">—</div>
+            </div>
+            <div class="p-3 bg-white rounded-lg shadow-sm text-center">
+              <div class="text-xs text-slate-400">+6%</div>
+              <div id="plus6" class="font-bold num">—</div>
+            </div>
+            <div class="p-3 bg-white rounded-lg shadow-sm text-center">
+              <div class="text-xs text-slate-400">+7%</div>
+              <div id="plus7" class="font-bold num">—</div>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-3 mt-4">
+            <button id="refreshBtn" class="px-4 py-2 bg-blue-600 text-white rounded-lg shadow-sm">再取得</button>
+            <button id="copyBtn" class="px-4 py-2 bg-gray-200 rounded-lg">コピー</button>
+            <div id="updatedAt" class="text-xs text-slate-400 ml-auto">—</div>
+          </div>
+
+        </div>
+
+        <div id="errorBox" class="mt-4 text-sm text-red-600"></div>
+      </section>
+
+      <section class="p-6 bg-white rounded-2xl shadow">
+        <canvas id="chart"></canvas>
+      </section>
+    </main>
+
+    <footer class="text-xs text-slate-500 mt-4">注: ブラウザのCORSポリシーにより直接APIが拒否される場合があります。公開プロキシ(api.allorigins.win)へ自動フォールバックしますが、安定化させる場合は自身のサーバー経由で取得してください。</footer>
+  </div>
+
+<script>
+(async function(){
+  const URL_YAHOO = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EN225?range=6mo&interval=1d';
+  const PROXY_RAW = 'https://api.allorigins.win/raw?url=';
+
+  const statusEl = document.getElementById('status');
+  const latestEl = document.getElementById('latestClose');
+  const ma25El = document.getElementById('ma25');
+  const plus5El = document.getElementById('plus5');
+  const plus6El = document.getElementById('plus6');
+  const plus7El = document.getElementById('plus7');
+  const baseDateEl = document.getElementById('baseDate');
+  const updatedAtEl = document.getElementById('updatedAt');
+  const errorBox = document.getElementById('errorBox');
+  const refreshBtn = document.getElementById('refreshBtn');
+  const copyBtn = document.getElementById('copyBtn');
+
+  let chart = null;
+
+  refreshBtn.addEventListener('click', loadData);
+  copyBtn.addEventListener('click', ()=>{
+    const text = `基準日: ${baseDateEl.textContent} 前日終値: ${latestEl.textContent} 25日MA: ${ma25El.textContent} (+5%=${plus5El.textContent}, +6%=${plus6El.textContent}, +7%=${plus7El.textContent})`;
+    navigator.clipboard?.writeText(text).then(()=> alert('コピーしました'), ()=> alert('コピーに失敗しました'));
+  });
+
+  async function fetchWithFallback(url){
+    try {
+      const res = await fetch(url, {cache: 'no-cache'});
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (e) {
+      statusEl.textContent = '直接取得失敗。公開プロキシへフォールバックしています…';
+      try {
+        const proxyUrl = PROXY_RAW + encodeURIComponent(url);
+        const r2 = await fetch(proxyUrl, {cache: 'no-cache'});
+        if (!r2.ok) throw new Error(`プロキシHTTP ${r2.status}`);
+        const text = await r2.text();
+        return JSON.parse(text);
+      } catch (e2) {
+        throw new Error('公開プロキシへの取得にも失敗しました。ブラウザのCORS制限か、プロキシの制限です。');
+      }
+    }
+  }
+
+  function lastNonNullIndex(arr){ for (let i=arr.length-1;i>=0;i--) if (arr[i] != null) return i; return -1; }
+  function fmt(v){ return (typeof v === 'number') ? v.toLocaleString('ja-JP', {maximumFractionDigits:2}) : '—'; }
+
+  async function loadData(){
+    statusEl.textContent = 'データ取得中…';
+    errorBox.textContent = '';
+    try {
+      const json = await fetchWithFallback(URL_YAHOO);
+      const r = json.chart && json.chart.result && json.chart.result[0];
+      if (!r) throw new Error('APIレスポンスが不正です。');
+
+      const timestamps = r.timestamp || [];
+      const rawCloses = (r.indicators && r.indicators.quote && r.indicators.quote[0] && r.indicators.quote[0].close) || [];
+      const closes = rawCloses.map(v => (v==null ? null : Number(v)));
+
+      // 日付配列（ローカルタイムで扱う）
+      const dates = timestamps.map(ts => new Date(ts * 1000));
+
+      // 基準日（前営業日）を決定：『現在のローカル日付の00:00より前』で最後の有効終値
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      let baseIndex = -1;
+      for (let i = closes.length - 1; i >= 0; i--){
+        if (closes[i] != null){
+          if (dates[i] < startOfToday) { baseIndex = i; break; }
+        }
+      }
+      // 万一見つからなければ最新有効データを使う
+      if (baseIndex === -1) baseIndex = lastNonNullIndex(closes);
+      if (baseIndex === -1) throw new Error('終値データが見つかりません。');
+
+      // baseIndex を起点に有効な直近25営業日を収集
+      const last25 = [];
+      for (let i = baseIndex; i >= 0 && last25.length < 25; i--){
+        if (closes[i] != null) last25.push(closes[i]);
+      }
+      if (last25.length < 25) throw new Error('25営業日の有効な終値が不足しています（取得範囲を増やしてください）。');
+
+      const ma25 = last25.reduce((a,b)=>a+b,0) / last25.length;
+      const latest = closes[baseIndex];
+
+      const plus5 = ma25 * 1.05;
+      const plus6 = ma25 * 1.06;
+      const plus7 = ma25 * 1.07;
+
+      baseDateEl.textContent = dates[baseIndex].toLocaleDateString('ja-JP');
+      latestEl.textContent = fmt(latest);
+      ma25El.textContent = fmt(ma25);
+      plus5El.textContent = fmt(plus5);
+      plus6El.textContent = fmt(plus6);
+      plus7El.textContent = fmt(plus7);
+      updatedAtEl.textContent = `取得: ${new Date().toLocaleString()}`;
+      statusEl.textContent = '取得成功';
+
+      // チャート用に25日移動平均シリーズを作る（以前と同様に各インデックスでのMA）
+      const maSeries = new Array(closes.length).fill(null);
+      let windowSum = 0, windowCount = 0;
+      for (let i=0;i<closes.length;i++){
+        if (closes[i] != null){ windowSum += closes[i]; windowCount++; }
+        if (i >= 25){ if (closes[i-25] != null){ windowSum -= closes[i-25]; windowCount--; } }
+        if (windowCount === 25) maSeries[i] = windowSum / 25;
+      }
+
+      const labels = dates.map(d => d.toLocaleDateString('ja-JP'));
+
+      const ctx = document.getElementById('chart');
+      const datasetClose = { label: '終値', data: closes, tension:0.2, pointRadius:0, borderColor: 'rgb(37,99,235)', borderWidth:2 };
+      const datasetMA = { label: '25日移動平均', data: maSeries, tension:0.2, pointRadius:0, borderColor: 'rgb(5,150,105)', borderDash: [6,4], borderWidth:2 };
+
+      if (chart) chart.destroy();
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets: [datasetClose, datasetMA] },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: 'top' } },
+          scales: { x: { display: true }, y: { display: true, beginAtZero: false } }
+        }
+      });
+
+    } catch (err) {
+      console.error(err);
+      statusEl.textContent = '取得失敗';
+      errorBox.textContent = err.message || String(err);
+    }
+  }
+
+  await loadData();
+})();
+</script>
+</body>
+</html>
